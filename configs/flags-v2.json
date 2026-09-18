@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "flags": {
+    "checkout_redesign": {
+      "default_variation": "off",
+      "variations": ["off", "control", "treatment"],
+      "rules": [
+        {
+          "id": "internal-testers",
+          "priority": 1,
+          "match": [
+            {"attribute": "tier", "operator": "eq", "values": ["staff"]}
+          ],
+          "variation": "treatment"
+        },
+        {
+          "id": "canary-10pct",
+          "priority": 10,
+          "bucket": {
+            "variations": ["control", "treatment"],
+            "weights": [9000, 1000]
+          }
+        }
+      ]
+    }
+  }
+}
