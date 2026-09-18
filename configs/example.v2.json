@@ -1,0 +1,51 @@
+{
+  "version": "v2",
+  "flags": [
+    {
+      "key": "checkout-redesign",
+      "description": "New checkout page rollout",
+      "on": true,
+      "rules": [
+        {
+          "id": "internal-employees",
+          "priority": 1,
+          "conditions": [
+            {"attribute": "tier", "operator": "in", "values": ["employee", "dogfood"]}
+          ],
+          "percentage": 100,
+          "variants": [{"key": "redesign", "weightBPS": 10000}]
+        },
+        {
+          "id": "beta-10pct",
+          "priority": 10,
+          "conditions": [
+            {"attribute": "country", "operator": "in", "values": ["US", "CA"]}
+          ],
+          "percentage": 10,
+          "variants": [
+            {"key": "control", "weightBPS": 5000},
+            {"key": "redesign", "weightBPS": 5000}
+          ]
+        },
+        {
+          "id": "kill-switch",
+          "priority": 100,
+          "off": true
+        }
+      ]
+    },
+    {
+      "key": "one-click-pay",
+      "on": true,
+      "prerequisites": ["checkout-redesign"],
+      "rules": [
+        {
+          "id": "all-users",
+          "priority": 1,
+          "percentage": 100,
+          "variants": [{"key": "enabled", "weightBPS": 10000}]
+        }
+      ]
+    }
+  ]
+}

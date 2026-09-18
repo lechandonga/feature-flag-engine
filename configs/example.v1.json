@@ -1,0 +1,23 @@
+{
+  "version": "v1",
+  "flags": [
+    {
+      "key": "legacy-experiment",
+      "on": true,
+      "percent": 100,
+      "rules": [
+        {
+          "id": "r1",
+          "order": 1,
+          "conditions": [
+            {"attribute": "tier", "operator": "in", "values": ["beta"]}
+          ],
+          "weight": [
+            {"variant": "old", "percent": 50},
+            {"variant": "new", "percent": 50}
+          ]
+        }
+      ]
+    }
+  ]
+}
