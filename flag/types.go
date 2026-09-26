@@ -40,8 +40,10 @@ type RawRule struct {
 	// Priority is 1-based; lower value wins. V1 payloads use "order".
 	Priority   int            `json:"priority"`
 	Conditions []RawCondition `json:"conditions,omitempty"`
-	// Percentage within 0..100; rolled-out users are then bucketed.
-	Percentage float64      `json:"percentage"`
+	// Percentage is the rollout ratio within 0..100. It is a pointer so an
+	// explicit 0 ("matched, but serve nobody") is distinguishable from an
+	// omitted value (which defaults to 100, full rollout on match).
+	Percentage *float64     `json:"percentage,omitempty"`
 	Variants   []RawVariant `json:"variants"`
 	// Off means a matched rule forces the flag OFF regardless of percentage.
 	Off bool `json:"off,omitempty"`

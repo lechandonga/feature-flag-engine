@@ -16,6 +16,13 @@ type RolloutInput struct {
 	Salt    string
 }
 
+// variantSalt separates the variant-assignment bucket from the
+// rollout-eligibility bucket. The two decisions must be independent so that
+// (a) every variant stays reachable no matter how small the rollout
+// percentage is, and (b) raising the percentage never reshuffles the variant
+// of users already inside the rollout window.
+const variantSalt = "variant"
+
 // RolloutValue returns a deterministic integer in [0,10000) derived only
 // from the flag key, user id and an optional stable salt. It deliberately
 // excludes rule ids, rule order and timestamps so that reordering rules or

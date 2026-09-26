@@ -7,13 +7,24 @@
 ## 快速开始
 
 ```go
-cfg, err := flag.ParseConfig(payload)      // 唯一配置入口：解析 + v1 迁移 + 校验
+cfg, err := flag.ParseConfig(payload)      // 解析入口：解析 + v1 迁移 + 校验
 engine := flag.NewEngine()
-engine.Snapshot(cfg)                        // 原子安装快照
+engine.Snapshot(cfg)                        // 原子安装快照（已校验过的配置）
 
 res := engine.Evaluate(ctx, flag.User{ID: "user-123", Attributes: attrs}, "checkout-redesign")
 // res.On / res.Variant / res.Status / res.Source / res.MatchedRule / res.Reason
 ```
+
+绕过解析、直接切换手工构建的配置（同样严格校验，拒装时旧配置继续服务）：
+
+```go
+err := engine.Install(handBuiltCfg)         // 结构校验 + 依赖校验后才原子切换
+```
+
+灰度放量语义：放量资格与变体分配使用两个独立的确定性分桶——比例上调单调
+（已放量用户不被收回）、变体粘性（已放量用户 variant 不变）、任意比例下
+全部变体按权重可达；`"percentage": 0` 显式表示「命中也不投放」，与缺省
+（=100）严格区分。详见 doc/RULES.md。
 
 后台刷新 + 失败降级：
 

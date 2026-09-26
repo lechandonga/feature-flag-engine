@@ -17,8 +17,21 @@
 |--------------------------------|-------------------------------------------------------|
 | rule `"order": 2`              | `"priority": 2`                                       |
 | `"weight": [{"percent":70}]`   | `"variants":[{"weightBPS":7000}]`（percent × 100）    |
-| flag 级 `"percent": 100` 且 on | 包装为一条全匹配隐式规则 `<flagKey>-legacy-default`   |
+| flag 级 `"percent": N>0` 且 on | 包装为一条全匹配隐式规则 `<flagKey>-legacy-default`   |
+| flag 级 `"percent": 0` 且 on   | 同上，但 percentage 置为缺省（见下「兼容范围」）      |
 | 未识别的旧字段                 | 忽略（见下）                                          |
+
+## v1/v2 兼容范围：显式 0 的边界
+
+v2 中 `"percentage": 0` 是**显式 0**：命中规则但不投放（区别于缺省 = 100）。
+而 v1 的历史行为里 `percent: 0` 与缺省同义（全量投放）。为保证**旧版本配置
+升级后语义不变**，v1 的 `percent: 0` 迁移为「缺省 percentage」而非显式 0；
+v1 的 `percent: N>0` 迁移为显式 N。也就是说：
+
+- v1 配置：任何写法下的评估结果与迁移前完全一致；
+- v2 配置：显式 0 与缺省的区分在所有入口（本地文件、API 推送、后台刷新）
+  一致生效；
+- 灰度放量请使用 v2 schema 表达显式 0。
 
 ## 未知字段、非法取值、缺省取值（三类必须分清）
 
@@ -37,8 +50,17 @@
    规则 id 便于定位。
 4. **缺省取值 → 按文档化默认值填充**（见 RULES.md 的默认值表），默认值只在
    语义安全时提供；会导致静默行为变化的字段（如 priority）不给默认值，直接拒绝。
+   `percentage` 用指针字段解析，显式 `0` 与「未提供」严格区分。
 
 非法 JSON 走 `ErrMalformedJSON`；空 payload / 空 flags 走 `ErrEmptyConfig`。
+
+## 绕过解析的直接切换入口
+
+调用方也可以不经过 JSON 解析，把手工构建的 `*Config` 交给
+`Engine.Install(cfg)`。该入口执行与 `ParseConfig` **同一套**校验
+（`Config.Validate` 结构校验 + `Config.CheckDependencies` 依赖校验），
+拒绝时返回同样可分类的错误，旧配置继续服务；并发评估在切换/拒装过程中
+不阻塞、不抖动、不返回空结果。
 
 ## 为什么被拒绝的配置不会影响线上
 

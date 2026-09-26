@@ -64,6 +64,15 @@ go vet ./...
 | 相同 payload 跳过| `TestRefresh_UnchangedPayloadSkipped`                         |
 | 刷新并发无抖动   | `TestConcurrentEvaluation_NoJitterAcrossRefresh`（-race 下验证）|
 | 首次加载前       | `TestEvaluate_BeforeFirstConfig_IsUnavailable`                |
+| 部分放量变体可达 | `TestPartialRollout_AllVariantsReachableWithWeights`（5 万用户，|
+|                  | 校验各变体按权重比例出现且评估耗时不劣化）                    |
+| 放量单调与粘性   | `TestRolloutIncrease_MonotoneAndSticky`（10%→30%→50%）        |
+| 显式 0 vs 缺省   | `TestExplicitZeroPercentage_VersusOmitted`,                   |
+|                  | `TestExplicitZeroPercentage_ConsistentAcrossIngresses`        |
+| v1 显式 0 兼容   | `TestV1LegacyPercentZero_KeepsLegacySemantics`                |
+| 切换入口拒装     | `TestInstall_RejectsInvalidAndKeepsServing`                   |
+| 切换入口合法切换 | `TestInstall_ValidSwap`                                       |
+| 切换与评估并发   | `TestInstall_ConcurrentWithEvaluate`（-race 下验证）          |
 | 上报去重         | `TestReporter_DedupesRepeatedSameOutcome` 等                  |
 | 上报故障隔离     | `TestReporter_SinkFailure/SlowSink/FullQueue_*`               |
 

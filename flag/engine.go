@@ -2,6 +2,7 @@ package flag
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,11 +24,34 @@ func NewEngine() *Engine { return &Engine{} }
 
 // Snapshot atomically installs a validated configuration. Passing nil is a
 // no-op so a refresh failure can never clear the last good config.
+//
+// Snapshot trusts the caller; use Install when the Config was built directly
+// (bypassing ParseConfig) so it is validated with the same strictness first.
 func (e *Engine) Snapshot(c *Config) {
 	if c == nil {
 		return
 	}
 	e.cfg.Store(c)
+}
+
+// Install validates c with exactly the same strictness as the parsing
+// ingress (structural validation plus dependency checks: self-loops, cycles,
+// missing prerequisites, contradictions) and only then atomically swaps it
+// in. On any rejection the previously active configuration keeps serving and
+// a typed error is returned; concurrent Evaluate calls are never blocked and
+// always see either the complete old or the complete new config.
+func (e *Engine) Install(c *Config) error {
+	if c == nil {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrEmptyConfig)
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if rj := c.CheckDependencies(); rj != nil {
+		return fmt.Errorf("%w: %w: %s", ErrInvalidConfig, rj.Kind, rj.Detail)
+	}
+	e.cfg.Store(c)
+	return nil
 }
 
 // Current returns the active configuration version, "" when none loaded.
@@ -115,6 +139,15 @@ func (e *Engine) Evaluate(ctx context.Context, user User, flagKey string) Result
 
 	bucket := RolloutValue(RolloutInput{FlagKey: flagKey, UserID: user.ID})
 	cutoff := int(matched.Percentage*100 + 0.5) // percentage -> basis points
+	if cutoff <= 0 {
+		// Explicit 0% rollout: the rule matched but serves nobody. The
+		// matched rule and the reason stay visible in the result.
+		r.Status = StatusOff
+		r.Source = SourceDefault
+		r.MatchedRule = matched.ID
+		r.Reason = "rule " + matched.ID + " matched but its rollout percentage is explicitly 0 (serve nobody)"
+		return r
+	}
 	if bucket >= cutoff {
 		r.Status = StatusOff
 		r.Source = SourceDefault
@@ -124,7 +157,11 @@ func (e *Engine) Evaluate(ctx context.Context, user User, flagKey string) Result
 		return r
 	}
 
-	variant := pickVariant(matched.Variants, bucket)
+	// Variant assignment uses its own independent bucket (see variantSalt):
+	// every variant stays reachable at any rollout percentage, and a user's
+	// variant cannot change when the percentage is raised.
+	variantBucket := RolloutValue(RolloutInput{FlagKey: flagKey, UserID: user.ID, Salt: variantSalt})
+	variant := pickVariant(matched.Variants, variantBucket)
 	r.Status = StatusOn
 	r.On = true
 	r.Variant = variant

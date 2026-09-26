@@ -15,6 +15,9 @@ Engine.Snapshot(cfg)  // atomic.Pointer.Store，整份配置原子切换
 - 活跃配置保存在 `atomic.Pointer[Config]` 中。刷新时新配置先**完整构建并校验**，
   最后一次原子 Store 完成切换：进行中的评估继续读旧快照，新评估读新快照，
   不存在中间状态，因此并发评估不会出现结果抖动、短暂失效或空结果。
+- 所有配置入口（本地文件、API 推送、后台刷新）都经 `ParseConfig` 做同一套
+  校验；绕过解析、直接安装手工构建的配置时改用 `Engine.Install`，校验严格度
+  与解析入口完全一致，拒装时旧快照继续服务（见 RULES.md「直接切换入口」）。
 - `Config` 本身不可变（安装后没有任何写路径），无需加读锁。
 - 刷新周期由 `Refresher.Start(ctx, interval)` 驱动；启动时立即刷新一次，
   不必等一个 interval 才有配置。
