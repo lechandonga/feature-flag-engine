@@ -13,6 +13,9 @@ import (
 //     it has zero rules;
 //   - a rule with no conditions matches every user;
 //   - a rule with "percentage" omitted defaults to 100 (roll out fully on match);
+//     a rule that explicitly writes "percentage": 0 means "match but never
+//     serve" — the two spellings are intentionally different and every config
+//     ingress (file, push, refresh, direct Install) preserves that difference;
 //   - a rule with one variant and no weights defaults that variant to 10000 bps;
 //   - "priority" omitted is a rejection on v2 (silent ordering changes would be
 //     dangerous); v1 "order" is migrated to priority automatically.
@@ -88,12 +91,22 @@ func migrateV1(raw *RawConfig) {
 		}
 		// Legacy flag-level percent: wrap into one catch-all rule so that
 		// evaluation semantics stay rule-based.
+		//
+		// Backwards-compatibility note: in v1 there was no rule-level
+		// "percentage" field at all, and the old engine treated the zero value
+		// of flag-level "percent" as the omitted default (full rollout). To
+		// keep old configs byte-for-byte behaviourally identical, 0 is migrated
+		// as an *omitted* percentage (nil -> 100), never as an explicit zero.
 		if f.Percent != nil && len(f.Rules) == 0 && f.On {
-			f.Rules = []RawRule{{
-				ID:         f.Key + "-legacy-default",
-				Priority:   1,
-				Percentage: float64(*f.Percent),
-			}}
+			rule := RawRule{
+				ID:       f.Key + "-legacy-default",
+				Priority: 1,
+			}
+			if *f.Percent != 0 {
+				p := float64(*f.Percent)
+				rule.Percentage = &p
+			}
+			f.Rules = []RawRule{rule}
 		}
 	}
 	raw.Version = Version2
@@ -122,12 +135,15 @@ func normalize(raw RawConfig) (*Config, error) {
 			if rr.Priority <= 0 {
 				return nil, fmt.Errorf("%w: %w: rule %q priority=%d", ErrInvalidConfig, ErrBadPriority, rr.ID, rr.Priority)
 			}
-			if rr.Percentage < 0 || rr.Percentage > 100 {
-				return nil, fmt.Errorf("%w: %w: rule %q percentage=%v", ErrInvalidConfig, ErrBadPercentage, rr.ID, rr.Percentage)
+			// Explicit 0 is a legal, meaningful value ("match but never
+			// serve"); only an omitted field receives the 100 default.
+			pct := 100.0
+			explicit := rr.Percentage != nil
+			if rr.Percentage != nil {
+				pct = *rr.Percentage
 			}
-			pct := rr.Percentage
-			if pct == 0 {
-				pct = 100 // documented default
+			if pct < 0 || pct > 100 {
+				return nil, fmt.Errorf("%w: %w: rule %q percentage=%v", ErrInvalidConfig, ErrBadPercentage, rr.ID, pct)
 			}
 			conds, err := normalizeConditions(rf.Key, rr)
 			if err != nil {
@@ -139,7 +155,8 @@ func normalize(raw RawConfig) (*Config, error) {
 			}
 			f.Rules = append(f.Rules, &Rule{
 				ID: rr.ID, Priority: rr.Priority, Conditions: conds,
-				Percentage: pct, Variants: variants, Off: rr.Off,
+				Percentage: pct, PercentageExplicit: explicit,
+				Variants: variants, Off: rr.Off,
 			})
 		}
 
@@ -212,9 +229,99 @@ func normalizeVariants(flagKey string, rr RawRule) ([]Variant, error) {
 }
 
 // Validate performs structural validation independent of dependency checks.
+//
+// It is the same boundary ParseConfig enforces while normalizing raw JSON,
+// restated here as an invariant check on an already-built Config so that the
+// direct-install ingress (Engine.Install) cannot bypass it: configs built by
+// hand still have to satisfy every structural rule. Dependency-graph checks
+// (missing / self / cyclic / contradictory prerequisites) live in
+// CheckDependencies and are run separately by both ingresses.
 func (c *Config) Validate() error {
 	if c == nil || len(c.Flags) == 0 {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrEmptyConfig)
+	}
+	switch c.Version {
+	case Version1, Version2:
+	default:
+		return fmt.Errorf("%w: %w: %q", ErrInvalidConfig, ErrUnknownVersion, c.Version)
+	}
+	for key, f := range c.Flags {
+		if f == nil {
+			return fmt.Errorf("%w: %w: nil flag entry", ErrInvalidConfig, ErrIllegalValue)
+		}
+		if f.Key == "" || f.Key != key {
+			return fmt.Errorf("%w: %w: flag key %q / map key %q mismatch or empty",
+				ErrInvalidConfig, ErrMissingField, f.Key, key)
+		}
+		seenRules := map[string]struct{}{}
+		for _, r := range f.Rules {
+			if r == nil {
+				return fmt.Errorf("%w: %w: nil rule on flag %q", ErrInvalidConfig, ErrIllegalValue, key)
+			}
+			if r.ID == "" {
+				return fmt.Errorf("%w: %w: rule id is required on flag %q", ErrInvalidConfig, ErrMissingField, key)
+			}
+			if _, dup := seenRules[r.ID]; dup {
+				return fmt.Errorf("%w: %w: %q on flag %q", ErrInvalidConfig, ErrDuplicateRuleID, r.ID, key)
+			}
+			seenRules[r.ID] = struct{}{}
+			if r.Priority <= 0 {
+				return fmt.Errorf("%w: %w: rule %q priority=%d", ErrInvalidConfig, ErrBadPriority, r.ID, r.Priority)
+			}
+			if r.Percentage < 0 || r.Percentage > 100 {
+				return fmt.Errorf("%w: %w: rule %q percentage=%v", ErrInvalidConfig, ErrBadPercentage, r.ID, r.Percentage)
+			}
+			for _, cond := range r.Conditions {
+				if err := validateCondition(key, r.ID, cond); err != nil {
+					return err
+				}
+			}
+			if !r.Off {
+				if err := validateVariants(key, r.ID, r.Variants); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateCondition(flagKey, ruleID string, cond Condition) error {
+	if cond.Attribute == "" {
+		return fmt.Errorf("%w: %w: empty attribute in rule %q of flag %q", ErrInvalidConfig, ErrBadCondition, ruleID, flagKey)
+	}
+	switch cond.Operator {
+	case OpIn, OpNotIn, OpEqual, OpNotEqual, OpContains, OpStartsWith:
+	default:
+		return fmt.Errorf("%w: %w: %q in rule %q of flag %q", ErrInvalidConfig, ErrUnknownOperator, cond.Operator, ruleID, flagKey)
+	}
+	if (cond.Operator == OpIn || cond.Operator == OpNotIn) && len(cond.Values) == 0 {
+		return fmt.Errorf("%w: %w: operator %q requires values in rule %q", ErrInvalidConfig, ErrBadCondition, cond.Operator, ruleID)
+	}
+	return nil
+}
+
+func validateVariants(flagKey, ruleID string, variants []Variant) error {
+	if len(variants) == 0 {
+		return fmt.Errorf("%w: %w: rule %q of flag %q", ErrInvalidConfig, ErrEmptyVariants, ruleID, flagKey)
+	}
+	keys := map[string]struct{}{}
+	sum := 0
+	for _, v := range variants {
+		if v.Key == "" {
+			return fmt.Errorf("%w: %w: variant key required in rule %q of flag %q", ErrInvalidConfig, ErrMissingField, ruleID, flagKey)
+		}
+		if _, dup := keys[v.Key]; dup {
+			return fmt.Errorf("%w: %w: variant %q in rule %q", ErrInvalidConfig, ErrDuplicateVariant, v.Key, ruleID)
+		}
+		keys[v.Key] = struct{}{}
+		if v.WeightBPS <= 0 {
+			return fmt.Errorf("%w: %w: variant %q weightBPS=%d", ErrInvalidConfig, ErrIllegalValue, v.Key, v.WeightBPS)
+		}
+		sum += v.WeightBPS
+	}
+	if sum != rolloutBasis {
+		return fmt.Errorf("%w: %w: rule %q weights sum to %d", ErrInvalidConfig, ErrWeightSum, ruleID, sum)
 	}
 	return nil
 }

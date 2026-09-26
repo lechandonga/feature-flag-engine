@@ -9,12 +9,18 @@ Loader (可插拔: 文件/HTTP/...)
 ParseConfig  ──失败──▶ 记录 stats，保留旧快照（引擎完全不受影响）
    │ 成功
    ▼
-Engine.Snapshot(cfg)  // atomic.Pointer.Store，整份配置原子切换
+Engine.Install（Validate + CheckDependencies，与直装入口同一边界）
+   │ 拒装（理论上 ParseConfig 已拦）→ 记录失败，保留旧快照
+   ▼
+atomic.Pointer.Store，整份配置原子切换
 ```
 
-- 活跃配置保存在 `atomic.Pointer[Config]` 中。刷新时新配置先**完整构建并校验**，
+- 活跃配置保存在 `atomic.Pointer[Config]` 中。刷新时新配置先**完整构建并
+  校验**（ParseConfig 后 Install 再跑一遍同一条 `Validate` + 依赖图边界），
   最后一次原子 Store 完成切换：进行中的评估继续读旧快照，新评估读新快照，
   不存在中间状态，因此并发评估不会出现结果抖动、短暂失效或空结果。
+- 直接把代码构建好的 `Config` 装进引擎也只能走 `Engine.Install`：自环、
+  成环、缺失/不自洽依赖及任何结构问题都在 Store 之前被拒，旧快照继续服务。
 - `Config` 本身不可变（安装后没有任何写路径），无需加读锁。
 - 刷新周期由 `Refresher.Start(ctx, interval)` 驱动；启动时立即刷新一次，
   不必等一个 interval 才有配置。

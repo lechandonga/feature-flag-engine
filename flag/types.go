@@ -40,8 +40,10 @@ type RawRule struct {
 	// Priority is 1-based; lower value wins. V1 payloads use "order".
 	Priority   int            `json:"priority"`
 	Conditions []RawCondition `json:"conditions,omitempty"`
-	// Percentage within 0..100; rolled-out users are then bucketed.
-	Percentage float64      `json:"percentage"`
+	// Percentage is a pointer precisely so that "explicitly 0" (matched but
+	// never served) can be distinguished from "omitted" (default: full 100%
+	// rollout). nil means the field was absent from the payload.
+	Percentage *float64     `json:"percentage,omitempty"`
 	Variants   []RawVariant `json:"variants"`
 	// Off means a matched rule forces the flag OFF regardless of percentage.
 	Off bool `json:"off,omitempty"`
@@ -103,9 +105,15 @@ type Rule struct {
 	ID         string
 	Priority   int
 	Conditions []Condition
-	Percentage float64 // 0..100
-	Variants   []Variant
-	Off        bool
+	// Percentage in 0..100 after normalization:
+	//   100  – field omitted in the payload (default full rollout) or explicit 100;
+	//   0    – explicitly written as 0: the rule can match but is never served.
+	Percentage float64
+	// PercentageExplicit records whether the payload carried an explicit
+	// "percentage" value (false only for the omitted-field default).
+	PercentageExplicit bool
+	Variants           []Variant
+	Off                bool
 }
 
 // Flag is a validated switch definition.
@@ -139,6 +147,10 @@ const (
 	SourceRule Source = "rule"
 	// SourceRuleOff: a rule matched and forced the flag off.
 	SourceRuleOff Source = "rule_off"
+	// SourceRuleZeroRollout: a rule matched but its rollout percentage is
+	// explicitly 0, so the match is never served (distinct from an omitted
+	// percentage, which means full rollout).
+	SourceRuleZeroRollout Source = "rule_zero_rollout"
 	// SourceConfigUnavailable: no valid configuration has ever loaded.
 	SourceConfigUnavailable Source = "config_unavailable"
 )

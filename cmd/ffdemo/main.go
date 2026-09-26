@@ -49,6 +49,7 @@ func main() {
 	for _, u := range users {
 		evaluate(u.label, u.user, "checkout-redesign")
 		evaluate(u.label+" / one-click", u.user, "one-click-pay")
+		evaluate(u.label+" / paused(0%)", u.user, "loyalty-points-v3")
 	}
 
 	// Repeated evaluation of the same pair: deduped in the reporter.

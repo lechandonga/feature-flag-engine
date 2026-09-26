@@ -33,8 +33,9 @@ type RefreshStats struct {
 //   - a failed load, an unparseable payload, or a rejected (e.g. cyclic)
 //     config never touches the engine: evaluations continue against the
 //     last successfully installed snapshot;
-//   - the new Config is fully built and validated before Snapshot swaps it
-//     in, so evaluations never observe a half-built configuration;
+//   - the new Config is fully built and validated (ParseConfig + Install
+//     share the exact same validation boundary) before the atomic swap,
+//     so evaluations never observe a half-built configuration;
 //   - refreshes are serialised (no overlapping load/parse/install);
 //   - before the first successful refresh, evaluations return an
 //     explainable "unavailable" result instead of an empty value.
@@ -104,10 +105,17 @@ func (r *Refresher) RefreshOnce(ctx context.Context) error {
 		return err
 	}
 
-	// Install only after the whole config is validated. Store is atomic;
-	// in-flight evaluations finish against the old snapshot, new ones see
-	// the new one. No intermediate state is ever observable.
-	r.engine.Snapshot(cfg)
+	// The new Config is built and validated by ParseConfig, and Install runs
+	// the same invariant + dependency boundary one more time before the
+	// atomic swap. Store is atomic; in-flight evaluations finish against the
+	// old snapshot, new ones see the new one. No intermediate state is ever
+	// observable.
+	if err := r.engine.Install(cfg); err != nil {
+		// Defensive: ParseConfig should already have rejected this. Record it
+		// like any other failed refresh and keep serving the last good config.
+		r.recordFailure(err)
+		return err
+	}
 	r.lastRaw = append([]byte(nil), data...)
 
 	r.mu.Lock()

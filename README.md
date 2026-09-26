@@ -7,9 +7,13 @@
 ## 快速开始
 
 ```go
-cfg, err := flag.ParseConfig(payload)      // 唯一配置入口：解析 + v1 迁移 + 校验
+cfg, err := flag.ParseConfig(payload)      // 解析入口：解析 + v1 迁移 + 全量校验
 engine := flag.NewEngine()
-engine.Snapshot(cfg)                        // 原子安装快照
+engine.Snapshot(cfg)                        // 原子安装（已校验的快照）
+
+// 绕过解析、直接构建 Config 时必须走 Install：它执行与解析入口完全相同的
+// 结构 + 依赖校验，拒绝自环/成环/缺失/不自洽配置，拒装时旧快照继续服务。
+err = engine.Install(handBuiltCfg)
 
 res := engine.Evaluate(ctx, flag.User{ID: "user-123", Attributes: attrs}, "checkout-redesign")
 // res.On / res.Variant / res.Status / res.Source / res.MatchedRule / res.Reason

@@ -10,21 +10,50 @@
           "id": "internal-employees",
           "priority": 1,
           "conditions": [
-            {"attribute": "tier", "operator": "in", "values": ["employee", "dogfood"]}
+            {
+              "attribute": "tier",
+              "operator": "in",
+              "values": [
+                "employee",
+                "dogfood"
+              ]
+            }
           ],
           "percentage": 100,
-          "variants": [{"key": "redesign", "weightBPS": 10000}]
+          "variants": [
+            {
+              "key": "redesign",
+              "weightBPS": 10000
+            }
+          ]
         },
         {
-          "id": "beta-10pct",
+          "id": "beta-30pct",
           "priority": 10,
           "conditions": [
-            {"attribute": "country", "operator": "in", "values": ["US", "CA"]}
+            {
+              "attribute": "country",
+              "operator": "in",
+              "values": [
+                "US",
+                "CA"
+              ]
+            }
           ],
-          "percentage": 10,
+          "percentage": 30,
           "variants": [
-            {"key": "control", "weightBPS": 5000},
-            {"key": "redesign", "weightBPS": 5000}
+            {
+              "key": "control",
+              "weightBPS": 5000
+            },
+            {
+              "key": "redesign",
+              "weightBPS": 3000
+            },
+            {
+              "key": "redesign-v2",
+              "weightBPS": 2000
+            }
           ]
         },
         {
@@ -37,13 +66,38 @@
     {
       "key": "one-click-pay",
       "on": true,
-      "prerequisites": ["checkout-redesign"],
+      "prerequisites": [
+        "checkout-redesign"
+      ],
       "rules": [
         {
           "id": "all-users",
           "priority": 1,
           "percentage": 100,
-          "variants": [{"key": "enabled", "weightBPS": 10000}]
+          "variants": [
+            {
+              "key": "enabled",
+              "weightBPS": 10000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "loyalty-points-v3",
+      "description": "Prepared rule, explicitly held at 0% (matched, never served)",
+      "on": true,
+      "rules": [
+        {
+          "id": "all-users-paused",
+          "priority": 1,
+          "percentage": 0,
+          "variants": [
+            {
+              "key": "enabled",
+              "weightBPS": 10000
+            }
+          ]
         }
       ]
     }

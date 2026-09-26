@@ -2,6 +2,7 @@ package flag
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,13 +22,42 @@ type Engine struct {
 // NewEngine builds an engine with no configuration loaded.
 func NewEngine() *Engine { return &Engine{} }
 
-// Snapshot atomically installs a validated configuration. Passing nil is a
-// no-op so a refresh failure can never clear the last good config.
+// Snapshot atomically installs an already-validated configuration. Passing
+// nil is a no-op so a refresh failure can never clear the last good config.
+//
+// Snapshot is the low-level primitive for code that obtained the Config from
+// ParseConfig (which has already run every check). Callers that bypass JSON
+// parsing and hand the engine a programmatically built Config MUST use
+// Install instead, which enforces the exact same validation as the parsing
+// ingress before anything is installed.
 func (e *Engine) Snapshot(c *Config) {
 	if c == nil {
 		return
 	}
 	e.cfg.Store(c)
+}
+
+// Install validates an already-built Config with the same strictness as the
+// parsing ingress (structural validation plus the prerequisite graph checks:
+// self loops, cycles, missing and statically-contradictory dependencies) and
+// only then atomically swaps it in.
+//
+// On rejection the previously active snapshot is left completely untouched
+// and evaluations keep serving it; the atomic swap happens only after every
+// check passes, so concurrent Evaluate calls can never observe a bad or
+// half-built configuration, block on validation, or return empty results.
+func (e *Engine) Install(c *Config) error {
+	if c == nil {
+		return fmt.Errorf("%w: %w: nil config", ErrInvalidConfig, ErrEmptyConfig)
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if rj := c.CheckDependencies(); rj != nil {
+		return fmt.Errorf("%w: %w: %s", ErrInvalidConfig, rj.Kind, rj.Detail)
+	}
+	e.cfg.Store(c)
+	return nil
 }
 
 // Current returns the active configuration version, "" when none loaded.
@@ -50,8 +80,15 @@ func (e *Engine) Current() Version {
 //  5. rules sorted by priority (lower wins; ties broken by id for a total,
 //     stable order); first rule whose conditions all match fires:
 //     - rule off        -> OFF (SourceRuleOff);
+//     - explicit 0%     -> OFF (SourceRuleZeroRollout); match is still
+//     recorded in MatchedRule/Reason;
 //     - rollout miss    -> OFF/default;
 //     - rollout hit     -> ON + deterministic variant (SourceRule).
+//
+// Rollout eligibility and variant assignment use two independent stable
+// hashes (see bucket.go): raising the percentage can only admit new users
+// (monotone, never recalls anyone), admitted users keep the same variant,
+// and every declared variant is reachable in its declared weight.
 func (e *Engine) Evaluate(ctx context.Context, user User, flagKey string) Result {
 	c := e.cfg.Load()
 	if c == nil {
@@ -113,25 +150,41 @@ func (e *Engine) Evaluate(ctx context.Context, user User, flagKey string) Result
 		return r
 	}
 
-	bucket := RolloutValue(RolloutInput{FlagKey: flagKey, UserID: user.ID})
+	// Explicit "percentage": 0 — the rule matches but is intentionally never
+	// served. Distinct from an omitted percentage (which normalizes to 100).
+	if matched.Percentage == 0 {
+		r.Status = StatusOff
+		r.Source = SourceRuleZeroRollout
+		r.MatchedRule = matched.ID
+		r.Reason = "rule " + matched.ID + " matched but its rollout percentage is explicitly 0 (matched, not served)"
+		return r
+	}
+
+	rolloutBucket := RolloutValue(RolloutInput{FlagKey: flagKey, UserID: user.ID})
 	cutoff := int(matched.Percentage*100 + 0.5) // percentage -> basis points
-	if bucket >= cutoff {
+	if rolloutBucket >= cutoff {
 		r.Status = StatusOff
 		r.Source = SourceDefault
 		r.MatchedRule = matched.ID
 		r.Reason = "rule " + matched.ID + " matched but user bucket " +
-			strconv.Itoa(bucket) + " is outside rollout window [0," + strconv.Itoa(cutoff) + ")"
+			strconv.Itoa(rolloutBucket) + " is outside rollout window [0," + strconv.Itoa(cutoff) + ")"
 		return r
 	}
 
-	variant := pickVariant(matched.Variants, bucket)
+	// Variant assignment is hashed independently of eligibility so all
+	// declared variants are reachable by rolled-in users at their declared
+	// weights, and the assignment stays glued to the user while the window
+	// widens.
+	variantBucket := VariantValue(RolloutInput{FlagKey: flagKey, UserID: user.ID})
+	variant := pickVariant(matched.Variants, variantBucket)
 	r.Status = StatusOn
 	r.On = true
 	r.Variant = variant
 	r.Source = SourceRule
 	r.MatchedRule = matched.ID
-	r.Reason = "rule " + matched.ID + " matched; bucket " + strconv.Itoa(bucket) +
-		" within [0," + strconv.Itoa(cutoff) + ") selected variant " + variant
+	r.Reason = "rule " + matched.ID + " matched; rollout bucket " + strconv.Itoa(rolloutBucket) +
+		" within [0," + strconv.Itoa(cutoff) + "), variant bucket " + strconv.Itoa(variantBucket) +
+		" selected variant " + variant
 	return r
 }
 
