@@ -15,7 +15,8 @@ res := engine.Evaluate(ctx, flag.User{ID: "user-123", Attributes: attrs}, "check
 // res.On / res.Variant / res.Status / res.Source / res.MatchedRule / res.Reason
 ```
 
-绕过解析、直接切换手工构建的配置（同样严格校验，拒装时旧配置继续服务）：
+绕过解析、直接切换手工构建的配置（与解析入口同一套校验边界——含条件
+操作符/取值、key 一致性等，拒装时旧配置继续服务）：
 
 ```go
 err := engine.Install(handBuiltCfg)         // 结构校验 + 依赖校验后才原子切换

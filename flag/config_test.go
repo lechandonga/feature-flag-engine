@@ -67,8 +67,50 @@ func TestV1_LegacyOrderAndWeight_Migrated(t *testing.T) {
 	}
 }
 
-func TestUnknownFields_Ignored(t *testing.T) {
-	payload := []byte(`{
+// A v1 flag-level percent outside [0,100] was illegal under the legacy
+// schema and must stay illegal after upgrade: it is rejected, not silently
+// treated as the omitted (full-rollout) default.
+func TestV1_PercentOutOfRange_Rejected(t *testing.T) {
+	for _, pct := range []string{"-1", "-50", "101", "250"} {
+		body := `{"version":"v1","flags":[{"key":"f","on":true,"percent":` + pct + `}]}`
+		_, err := ParseConfig([]byte(body))
+		if !errors.Is(err, ErrBadPercentage) {
+			t.Fatalf("percent=%s: want ErrBadPercentage, got %v", pct, err)
+		}
+		if !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("percent=%s: must wrap ErrInvalidConfig, got %v", pct, err)
+		}
+	}
+}
+
+// Legal v1 percent values keep their legacy behaviour after upgrade:
+// percent:0 was treated exactly like an omitted value (full rollout) under
+// v1, and in-range values become the implicit catch-all rule's percentage.
+func TestV1_PercentInRange_PreservesLegacySemantics(t *testing.T) {
+	// percent:0 -> legacy full rollout (unchanged v1 behaviour).
+	cfg, err := ParseConfig([]byte(
+		`{"version":"v1","flags":[{"key":"f","on":true,"percent":0}]}`))
+	if err != nil {
+		t.Fatalf("v1 percent:0 must stay legal: %v", err)
+	}
+	e := NewEngine()
+	e.Snapshot(cfg)
+	if r := e.Evaluate(context.Background(), User{ID: "u"}, "f"); !r.On {
+		t.Fatalf("v1 percent:0 must keep legacy full-rollout behaviour: %+v", r)
+	}
+
+	// percent:30 -> implicit rule with percentage 30.
+	cfg30, err := ParseConfig([]byte(
+		`{"version":"v1","flags":[{"key":"f","on":true,"percent":30}]}`))
+	if err != nil {
+		t.Fatalf("v1 percent:30: %v", err)
+	}
+	if got := cfg30.Flags["f"].Rules[0].Percentage; got != 30 {
+		t.Fatalf("v1 percent:30 migrated to %v", got)
+	}
+}
+
+func TestUnknownFields_Ignored(t *testing.T) {	payload := []byte(`{
 	  "version": "v2",
 	  "futureEnvelope": 42,
 	  "flags": [

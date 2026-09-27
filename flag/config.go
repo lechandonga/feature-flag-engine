@@ -45,7 +45,9 @@ func ParseConfig(data []byte) (*Config, error) {
 
 	switch raw.Version {
 	case Version1:
-		migrateV1(&raw)
+		if err := migrateV1(&raw); err != nil {
+			return nil, err
+		}
 	case Version2:
 		// current schema
 	case "":
@@ -73,9 +75,16 @@ func ParseConfig(data []byte) (*Config, error) {
 //   - flag "percent" becomes an implicit single full-match rule;
 //   - legacy "weight" entries (integer percentages summing to 100) become
 //     basis-point variants (weightBPS = percent*100).
-func migrateV1(raw *RawConfig) {
+//
+// Legacy validation is preserved: a flag-level percent outside [0,100] was
+// illegal under v1 and stays illegal after upgrade — it is rejected here
+// instead of being silently treated as the omitted (full-rollout) default.
+func migrateV1(raw *RawConfig) error {
 	for i := range raw.Flags {
 		f := &raw.Flags[i]
+		if f.Percent != nil && (*f.Percent < 0 || *f.Percent > 100) {
+			return fmt.Errorf("%w: %w: flag %q percent=%d", ErrInvalidConfig, ErrBadPercentage, f.Key, *f.Percent)
+		}
 		for j := range f.Rules {
 			r := &f.Rules[j]
 			if r.Order != nil && r.Priority == 0 {
@@ -103,6 +112,7 @@ func migrateV1(raw *RawConfig) {
 		}
 	}
 	raw.Version = Version2
+	return nil
 }
 
 func normalize(raw RawConfig) (*Config, error) {
@@ -188,6 +198,29 @@ func normalizeConditions(flagKey string, rr RawRule) ([]Condition, error) {
 	return out, nil
 }
 
+// validateConditions applies the same condition checks to an already-built
+// Rule that normalizeConditions applies to the wire form: non-empty
+// attribute, known operator, and at least one candidate value for the set
+// operators. Without this, a hand-built condition with an unknown operator
+// would silently match nobody (or, for not_in with no values, everybody),
+// diverging from the parsing ingress which rejects both.
+func validateConditions(flagKey string, r *Rule) error {
+	for _, cond := range r.Conditions {
+		if cond.Attribute == "" {
+			return fmt.Errorf("%w: %w: empty attribute in rule %q of flag %q", ErrInvalidConfig, ErrBadCondition, r.ID, flagKey)
+		}
+		switch cond.Operator {
+		case OpIn, OpNotIn, OpEqual, OpNotEqual, OpContains, OpStartsWith:
+		default:
+			return fmt.Errorf("%w: %w: %q in rule %q of flag %q", ErrInvalidConfig, ErrUnknownOperator, cond.Operator, r.ID, flagKey)
+		}
+		if (cond.Operator == OpIn || cond.Operator == OpNotIn) && len(cond.Values) == 0 {
+			return fmt.Errorf("%w: %w: operator %q requires values in rule %q", ErrInvalidConfig, ErrBadCondition, cond.Operator, r.ID)
+		}
+	}
+	return nil
+}
+
 func normalizeVariants(flagKey string, rr RawRule) ([]Variant, error) {
 	if rr.Off {
 		return nil, nil
@@ -223,9 +256,11 @@ func normalizeVariants(flagKey string, rr RawRule) ([]Variant, error) {
 //
 // It is applied both by ParseConfig and by Engine.Install, so a hand-built
 // Config that bypasses parsing is held to exactly the same standard as one
-// decoded from JSON: no empty config, no empty flag keys, no duplicate rule
-// ids, priorities > 0, percentages within [0,100], and variant weights that
-// are positive and sum to 10000 basis points.
+// decoded from JSON: no empty config, no empty flag keys, the map key must
+// match the flag's declared key, no duplicate rule ids, priorities > 0,
+// percentages within [0,100], conditions with known operators and (for the
+// set operators) at least one candidate value, and variant weights that are
+// positive and sum to 10000 basis points.
 func (c *Config) Validate() error {
 	if c == nil || len(c.Flags) == 0 {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrEmptyConfig)
@@ -233,6 +268,9 @@ func (c *Config) Validate() error {
 	for key, f := range c.Flags {
 		if f == nil || key == "" || f.Key == "" {
 			return fmt.Errorf("%w: %w: flag key is required", ErrInvalidConfig, ErrMissingField)
+		}
+		if f.Key != key {
+			return fmt.Errorf("%w: %w: map key %q vs declared key %q", ErrInvalidConfig, ErrFlagKeyMismatch, key, f.Key)
 		}
 		ruleIDs := map[string]struct{}{}
 		for _, r := range f.Rules {
@@ -248,6 +286,9 @@ func (c *Config) Validate() error {
 			}
 			if r.Percentage < 0 || r.Percentage > 100 {
 				return fmt.Errorf("%w: %w: rule %q percentage=%v", ErrInvalidConfig, ErrBadPercentage, r.ID, r.Percentage)
+			}
+			if err := validateConditions(key, r); err != nil {
+				return err
 			}
 			if r.Off {
 				continue

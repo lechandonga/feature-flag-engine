@@ -22,6 +22,7 @@ var (
 	ErrBadPriority      = errors.New("rule priority must be a positive integer")
 	ErrUnknownOperator  = errors.New("unknown targeting operator")
 	ErrBadCondition     = errors.New("malformed targeting condition")
+	ErrFlagKeyMismatch  = errors.New("flag key does not match its map entry")
 
 	// Dependency-related rejections.
 	ErrMissingDependency       = errors.New("flag depends on a non-existent flag")

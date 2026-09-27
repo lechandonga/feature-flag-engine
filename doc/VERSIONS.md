@@ -19,7 +19,16 @@
 | `"weight": [{"percent":70}]`   | `"variants":[{"weightBPS":7000}]`（percent × 100）    |
 | flag 级 `"percent": N>0` 且 on | 包装为一条全匹配隐式规则 `<flagKey>-legacy-default`   |
 | flag 级 `"percent": 0` 且 on   | 同上，但 percentage 置为缺省（见下「兼容范围」）      |
+| flag 级 `"percent"` 越界       | 拒绝 `ErrBadPercentage`（见下「越界取值」）           |
 | 未识别的旧字段                 | 忽略（见下）                                          |
+
+### v1 越界取值的处理
+
+v1 的开关级 `percent` 合法区间是 [0,100]，旧版本对越界值（负数、大于 100）
+判为非法。升级路径保持这一行为：`percent` 越界的 v1 配置在迁移阶段即被
+`ParseConfig` 拒绝（`ErrBadPercentage`），**不会**被悄悄当成缺省的全量
+投放放出去。覆盖：`TestV1_PercentOutOfRange_Rejected`；合法值（含 0）的
+迁移行为不变，见 `TestV1_PercentInRange_PreservesLegacySemantics`。
 
 ## v1/v2 兼容范围：显式 0 的边界
 
@@ -59,8 +68,21 @@ v1 的 `percent: N>0` 迁移为显式 N。也就是说：
 调用方也可以不经过 JSON 解析，把手工构建的 `*Config` 交给
 `Engine.Install(cfg)`。该入口执行与 `ParseConfig` **同一套**校验
 （`Config.Validate` 结构校验 + `Config.CheckDependencies` 依赖校验），
+两条入口的校验边界完全一致，包括：
+
+- 条件校验：未知操作符（`ErrUnknownOperator`）、空属性、in/not_in 缺少
+  候选值（`ErrBadCondition`）同样被拒绝——不允许出现「直装能装、解析会拒」
+  的规则（这类规则装进去后要么永不命中、要么反向全命中，与解析入口表现
+  不一致）；
+- 标识一致性：开关在 `Config.Flags` 表中的键必须与其声明的 `Flag.Key`
+  一致（`ErrFlagKeyMismatch`）；
+- 显式 0 与缺省：直装时 `Rule.Percentage` 是标量，0 即显式 0（命中但不
+  投放），与解析入口的 `"percentage": 0` 语义一致；缺省 100 的语义由
+  解析入口在 normalize 阶段落实，直装方需自行给出目标值。
+
 拒绝时返回同样可分类的错误，旧配置继续服务；并发评估在切换/拒装过程中
-不阻塞、不抖动、不返回空结果。
+不阻塞、不抖动、不返回空结果。两入口判定一致性由 `TestInstall_ParseParity`
+覆盖。
 
 ## 为什么被拒绝的配置不会影响线上
 

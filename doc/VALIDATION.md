@@ -17,6 +17,7 @@
 | `ErrBadPriority`              | priority ≤ 0                                |
 | `ErrUnknownOperator`          | 未知条件操作符                              |
 | `ErrBadCondition`             | 条件缺属性，或 in/not_in 无 values          |
+| `ErrFlagKeyMismatch`          | 开关声明的 key 与配置表中的键不一致（直装） |
 | `ErrMissingDependency`        | prerequisite 指向不存在的开关               |
 | `ErrCircularDependency`       | 依赖环（含自依赖），错误信息含环链          |
 | `ErrDependencyContradiction`  | 依赖重复，或 prerequisite 静态上永不可 ON   |
@@ -70,7 +71,11 @@ go vet ./...
 | 显式 0 vs 缺省   | `TestExplicitZeroPercentage_VersusOmitted`,                   |
 |                  | `TestExplicitZeroPercentage_ConsistentAcrossIngresses`        |
 | v1 显式 0 兼容   | `TestV1LegacyPercentZero_KeepsLegacySemantics`                |
-| 切换入口拒装     | `TestInstall_RejectsInvalidAndKeepsServing`                   |
+| v1 越界比例拒绝  | `TestV1_PercentOutOfRange_Rejected`                           |
+| v1 合法比例迁移  | `TestV1_PercentInRange_PreservesLegacySemantics`              |
+| 切换入口拒装     | `TestInstall_RejectsInvalidAndKeepsServing`（含未知操作符、   |
+|                  | in/not_in 无 values、key 不一致等直装场景）                   |
+| 两入口判定一致   | `TestInstall_ParseParity`                                     |
 | 切换入口合法切换 | `TestInstall_ValidSwap`                                       |
 | 切换与评估并发   | `TestInstall_ConcurrentWithEvaluate`（-race 下验证）          |
 | 上报去重         | `TestReporter_DedupesRepeatedSameOutcome` 等                  |
