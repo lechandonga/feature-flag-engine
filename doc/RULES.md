@@ -117,3 +117,13 @@ variantBucket 决定，已放量用户的 variant 也**保持不变**（**粘性
 服务**。安装本身仍是单次原子 Store，并发评估在拒装/切换全过程中不阻塞、
 不抖动、不返回空结果。`Engine.Snapshot` 保留给「配置已被 ParseConfig 校验过」
 的内部路径（如 Refresher），信任调用方、不做重复校验。
+
+直装与解析共用同一套条件校验边界，手工拼装对象不再比走 JSON 松：
+
+- 每个条件都必须有非空 `Attribute`，否则 `ErrBadCondition`；
+- `Operator` 必须是受支持的六种之一，未知操作符拒绝（`ErrUnknownOperator`），
+  不会在评估期被静默当成「谁都不命中」；
+- `in`/`not_in` 必须带至少一个 `Values`，否则 `ErrBadCondition`——空集合
+  会让 `in` 对谁都不生效、`not_in` 对所有人命中，属于配置错误而非合法默认；
+- 开关在 `Config.Flags` 中的槽位 key 必须等于它自己声明的 `Flag.Key`，
+  不一致直接 `ErrFlagKeyMismatch`（JSON 入口由解码过程天然保证）。

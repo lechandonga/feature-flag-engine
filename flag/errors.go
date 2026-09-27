@@ -14,6 +14,7 @@ var (
 	ErrIllegalValue     = errors.New("illegal field value")
 	ErrMissingField     = errors.New("required field is missing")
 	ErrDuplicateFlagKey = errors.New("duplicate flag key")
+	ErrFlagKeyMismatch  = errors.New("flag map key does not match the flag's declared key")
 	ErrDuplicateRuleID  = errors.New("duplicate rule id")
 	ErrDuplicateVariant = errors.New("duplicate variant key")
 	ErrWeightSum        = errors.New("bucket weights must sum to 10000 (basis points)")

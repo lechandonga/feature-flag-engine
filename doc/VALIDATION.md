@@ -10,6 +10,7 @@
 | `ErrMissingField`             | 开关 key / 规则 id / variant key 缺失       |
 | `ErrIllegalValue`             | 权重 ≤ 0 等非法取值                         |
 | `ErrDuplicateFlagKey`         | 开关 key 重复                               |
+| `ErrFlagKeyMismatch`          | 直装 `*Config` 中 map 槽位 key 与开关自声明 `Flag.Key` 不一致（JSON 入口不可能出现，解码时开关必然落在自身 key 下） |
 | `ErrDuplicateRuleID`          | 同一开关内规则 id 重复                      |
 | `ErrDuplicateVariant`         | 同一规则内 variant key 重复                 |
 | `ErrWeightSum`                | 权重基点之和 ≠ 10000                        |
@@ -73,6 +74,13 @@ go vet ./...
 | 切换入口拒装     | `TestInstall_RejectsInvalidAndKeepsServing`                   |
 | 切换入口合法切换 | `TestInstall_ValidSwap`                                       |
 | 切换与评估并发   | `TestInstall_ConcurrentWithEvaluate`（-race 下验证）          |
+| 两入口校验一致   | `TestDirectInstall_SameStrictnessAsParse`（未知操作符、空集合 |
+|                  | 条件、空属性、负比例：ParseConfig 与 Install 判定相同；含     |
+|                  | `ErrFlagKeyMismatch` 仅直装可达）                             |
+| 直装拒装不降级   | `TestDirectInstall_RejectionKeepsPreviousConfigServing`       |
+| 直装切换并发     | `TestDirectInstall_ConcurrentSwapRejectAndEvaluate`（-race）  |
+| v1 越界比例拒绝  | `TestV1LegacyPercent_OutOfRangeRejected`                       |
+| v1 合法比例保留  | `TestV1LegacyPercent_LegalValuesPreserved`（0=全量、50=显式） |
 | 上报去重         | `TestReporter_DedupesRepeatedSameOutcome` 等                  |
 | 上报故障隔离     | `TestReporter_SinkFailure/SlowSink/FullQueue_*`               |
 
@@ -86,3 +94,17 @@ go run ./cmd/ffdemo
 前置依赖）与 `configs/example.v1.json`（旧版迁移）。可以尝试把 v2 配置改成
 循环依赖或权重和错误，观察 ParseConfig 的分类报错；或让 Loader 返回错误，
 观察评估继续命中上一份配置。
+
+## 本地验证本次边界问题的最小命令
+
+```bash
+# 两条入口判定一致、拒装后旧配置继续服务、并发切换不抖动
+go test -count=1 -v -run 'TestDirectInstall' ./flag
+# v1 越界比例拒绝、合法比例（含显式 0 vs 缺省）语义不变
+go test -count=1 -v -run 'TestV1LegacyPercent|TestExplicitZeroPercentage' ./flag
+# 全量回归（含 5 万用户分桶分布、依赖/循环、版本兼容、刷新降级）
+go test -count=1 ./...
+# 并发切换/刷新路径的竞态验证
+CGO_ENABLED=1 go test -race -count=1 ./...
+go vet ./...
+```

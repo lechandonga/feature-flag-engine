@@ -19,6 +19,7 @@
 | `"weight": [{"percent":70}]`   | `"variants":[{"weightBPS":7000}]`（percent × 100）    |
 | flag 级 `"percent": N>0` 且 on | 包装为一条全匹配隐式规则 `<flagKey>-legacy-default`   |
 | flag 级 `"percent": 0` 且 on   | 同上，但 percentage 置为缺省（见下「兼容范围」）      |
+| flag 级 `"percent"` 越界（<0 或 >100） | **拒绝** `ErrBadPercentage`，不得按缺省全量投放（旧版同样判非法，见下） |
 | 未识别的旧字段                 | 忽略（见下）                                          |
 
 ## v1/v2 兼容范围：显式 0 的边界
@@ -29,6 +30,11 @@ v2 中 `"percentage": 0` 是**显式 0**：命中规则但不投放（区别于�
 v1 的 `percent: N>0` 迁移为显式 N。也就是说：
 
 - v1 配置：任何写法下的评估结果与迁移前完全一致；
+  - 开关级 `percent` 的合法区间是 `[0,100]`：`0` 按历史语义当缺省全量，
+    `1..100` 迁移为显式比例；越界值（负数或 >100）在旧版本里本来就是
+    非法配置，升级后**同样拒绝**（`ErrBadPercentage`），不会被悄悄当成
+    缺省值变成全量投放。覆盖：`TestV1LegacyPercent_OutOfRangeRejected`、
+    `TestV1LegacyPercent_LegalValuesPreserved`；
 - v2 配置：显式 0 与缺省的区分在所有入口（本地文件、API 推送、后台刷新）
   一致生效；
 - 灰度放量请使用 v2 schema 表达显式 0。
@@ -61,6 +67,20 @@ v1 的 `percent: N>0` 迁移为显式 N。也就是说：
 （`Config.Validate` 结构校验 + `Config.CheckDependencies` 依赖校验），
 拒绝时返回同样可分类的错误，旧配置继续服务；并发评估在切换/拒装过程中
 不阻塞、不抖动、不返回空结果。
+
+两条入口共用同一套校验边界，直装**不会**比解析松：
+
+| 校验点                | ParseConfig（JSON 入口）            | Engine.Install（直装入口）          |
+|-----------------------|-------------------------------------|--------------------------------------|
+| 未知条件操作符        | 拒绝 `ErrUnknownOperator`           | 拒绝 `ErrUnknownOperator`            |
+| 条件缺 attribute      | 拒绝 `ErrBadCondition`              | 拒绝 `ErrBadCondition`               |
+| `in`/`not_in` 无值    | 拒绝 `ErrBadCondition`（否则规则会对所有人命中/对谁都不生效） | 同左 |
+| 比例越界 / 权重和错误 | 拒绝 `ErrBadPercentage`/`ErrWeightSum` | 同左                              |
+| 开关标识一致          | 天然满足（解码时开关落在自身 key 下） | 额外拒绝：map 槽位 key ≠ `Flag.Key`，`ErrFlagKeyMismatch` |
+
+覆盖：`TestDirectInstall_SameStrictnessAsParse`（两入口对同一组非法结构
+给出同一个 sentinel）、`TestDirectInstall_RejectionKeepsPreviousConfigServing`、
+`TestDirectInstall_ConcurrentSwapRejectAndEvaluate`（-race 下验证）。
 
 ## 为什么被拒绝的配置不会影响线上
 

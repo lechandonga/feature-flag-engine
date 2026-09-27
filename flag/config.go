@@ -45,7 +45,9 @@ func ParseConfig(data []byte) (*Config, error) {
 
 	switch raw.Version {
 	case Version1:
-		migrateV1(&raw)
+		if err := migrateV1(&raw); err != nil {
+			return nil, err
+		}
 	case Version2:
 		// current schema
 	case "":
@@ -73,7 +75,12 @@ func ParseConfig(data []byte) (*Config, error) {
 //   - flag "percent" becomes an implicit single full-match rule;
 //   - legacy "weight" entries (integer percentages summing to 100) become
 //     basis-point variants (weightBPS = percent*100).
-func migrateV1(raw *RawConfig) {
+//
+// Out-of-range flag-level percent values are rejected here so an upgraded v1
+// config is held to the same legality boundary as the legacy parser: a
+// negative or >100 percent is an error, never silently coerced to the
+// omitted-value default (full rollout).
+func migrateV1(raw *RawConfig) error {
 	for i := range raw.Flags {
 		f := &raw.Flags[i]
 		for j := range f.Rules {
@@ -92,17 +99,24 @@ func migrateV1(raw *RawConfig) {
 		// evaluation semantics stay rule-based. Legacy semantics treated
 		// percent:0 exactly like an omitted value (full rollout), so a 0 is
 		// migrated to an omitted percentage to keep upgraded v1 configs
-		// behaving exactly as before.
-		if f.Percent != nil && len(f.Rules) == 0 && f.On {
-			rule := RawRule{ID: f.Key + "-legacy-default", Priority: 1}
-			if *f.Percent > 0 {
-				p := float64(*f.Percent)
-				rule.Percentage = &p
+		// behaving exactly as before. Values outside [0,100] are illegal in
+		// v1 as well and must be rejected, not defaulted.
+		if f.Percent != nil {
+			if *f.Percent < 0 || *f.Percent > 100 {
+				return fmt.Errorf("%w: %w: flag %q percent=%d", ErrInvalidConfig, ErrBadPercentage, f.Key, *f.Percent)
 			}
-			f.Rules = []RawRule{rule}
+			if len(f.Rules) == 0 && f.On {
+				rule := RawRule{ID: f.Key + "-legacy-default", Priority: 1}
+				if *f.Percent > 0 {
+					p := float64(*f.Percent)
+					rule.Percentage = &p
+				}
+				f.Rules = []RawRule{rule}
+			}
 		}
 	}
 	raw.Version = Version2
+	return nil
 }
 
 func normalize(raw RawConfig) (*Config, error) {
@@ -223,9 +237,11 @@ func normalizeVariants(flagKey string, rr RawRule) ([]Variant, error) {
 //
 // It is applied both by ParseConfig and by Engine.Install, so a hand-built
 // Config that bypasses parsing is held to exactly the same standard as one
-// decoded from JSON: no empty config, no empty flag keys, no duplicate rule
-// ids, priorities > 0, percentages within [0,100], and variant weights that
-// are positive and sum to 10000 basis points.
+// decoded from JSON: no empty config, no empty flag keys, a flag's map key
+// must equal its declared key, no duplicate rule ids, priorities > 0,
+// percentages within [0,100], every condition must have an attribute and a
+// known operator (in/not_in require at least one value), and variant
+// weights that are positive and sum to 10000 basis points.
 func (c *Config) Validate() error {
 	if c == nil || len(c.Flags) == 0 {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrEmptyConfig)
@@ -233,6 +249,9 @@ func (c *Config) Validate() error {
 	for key, f := range c.Flags {
 		if f == nil || key == "" || f.Key == "" {
 			return fmt.Errorf("%w: %w: flag key is required", ErrInvalidConfig, ErrMissingField)
+		}
+		if f.Key != key {
+			return fmt.Errorf("%w: %w: map key %q vs declared key %q", ErrInvalidConfig, ErrFlagKeyMismatch, key, f.Key)
 		}
 		ruleIDs := map[string]struct{}{}
 		for _, r := range f.Rules {
@@ -248,6 +267,9 @@ func (c *Config) Validate() error {
 			}
 			if r.Percentage < 0 || r.Percentage > 100 {
 				return fmt.Errorf("%w: %w: rule %q percentage=%v", ErrInvalidConfig, ErrBadPercentage, r.ID, r.Percentage)
+			}
+			if err := validateConditions(key, r); err != nil {
+				return err
 			}
 			if r.Off {
 				continue
@@ -273,6 +295,29 @@ func (c *Config) Validate() error {
 			if sum != 10000 {
 				return fmt.Errorf("%w: %w: rule %q weights sum to %d", ErrInvalidConfig, ErrWeightSum, r.ID, sum)
 			}
+		}
+	}
+	return nil
+}
+
+// validateConditions holds a hand-built Config to the same condition
+// strictness as normalizeConditions applies to parsed payloads: every
+// predicate needs an attribute and a known operator, and the set operators
+// in/not_in require at least one value. A rule that silently matches nobody
+// or everybody because of a malformed condition is therefore impossible to
+// install directly, exactly as it is impossible to parse.
+func validateConditions(flagKey string, r *Rule) error {
+	for _, cond := range r.Conditions {
+		if cond.Attribute == "" {
+			return fmt.Errorf("%w: %w: empty attribute in rule %q of flag %q", ErrInvalidConfig, ErrBadCondition, r.ID, flagKey)
+		}
+		switch cond.Operator {
+		case OpIn, OpNotIn, OpEqual, OpNotEqual, OpContains, OpStartsWith:
+		default:
+			return fmt.Errorf("%w: %w: %q in rule %q of flag %q", ErrInvalidConfig, ErrUnknownOperator, cond.Operator, r.ID, flagKey)
+		}
+		if (cond.Operator == OpIn || cond.Operator == OpNotIn) && len(cond.Values) == 0 {
+			return fmt.Errorf("%w: %w: operator %q requires values in rule %q", ErrInvalidConfig, ErrBadCondition, cond.Operator, r.ID)
 		}
 	}
 	return nil
